@@ -1,0 +1,8 @@
+bin/
+*.obj
+*.lib
+*.exp
+*.asi
+.vs/
+*.user
+*.pdb
