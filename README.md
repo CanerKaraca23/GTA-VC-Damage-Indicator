@@ -58,5 +58,4 @@ Whenever Tommy takes damage:
 
 ## 📜 Credits & Acknowledgments
 - **Caner Karaca** - Author & Developer
-- **Rockstar Games** - Grand Theft Auto: Vice City
-- **DK22Pac & GTA Community** - Reverse-engineering research and Plugin-SDK
+- **Plugin-SDK** - Reverse-engineering research and SDK
