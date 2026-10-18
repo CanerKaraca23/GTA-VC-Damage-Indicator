@@ -51,6 +51,112 @@ typedef int(__cdecl* tRwIm2DRenderPrimitive)(int primType, RwIm2DVertex* vertice
 static tRwRenderStateSet RwRenderStateSet = (tRwRenderStateSet)ADDR_RW_RENDER_STATE_SET;
 static tRwIm2DRenderPrimitive RwIm2DRenderPrimitive = (tRwIm2DRenderPrimitive)ADDR_RW_IM2D_RENDER_PRIM;
 
+// --- Mod Configuration ---
+struct ModConfig {
+    bool     enabled;
+    uint8_t  red;
+    uint8_t  green;
+    uint8_t  blue;
+    float    maxAlpha;
+    DWORD    duration;
+    float    widthPercent;
+    float    heightPercent;
+    bool     smoothFade;
+    int      reloadKey;
+};
+
+static ModConfig g_Config = {
+    true,        // enabled
+    215, 18, 18, // red, green, blue
+    210.0f,      // maxAlpha
+    750,         // duration (ms)
+    16.0f,       // widthPercent (%)
+    18.0f,       // heightPercent (%)
+    true,        // smoothFade
+    0            // reloadKey
+};
+
+static HMODULE g_hModule = NULL;
+
+static void LoadConfig(HMODULE hModule) {
+    if (hModule) {
+        g_hModule = hModule;
+    }
+    char iniPath[MAX_PATH] = { 0 };
+    if (GetModuleFileNameA(g_hModule, iniPath, MAX_PATH)) {
+        char* dot = strrchr(iniPath, '.');
+        if (dot) {
+            dot[1] = 'i';
+            dot[2] = 'n';
+            dot[3] = 'i';
+            dot[4] = '\0';
+        }
+    }
+
+    if (GetFileAttributesA(iniPath) == INVALID_FILE_ATTRIBUTES) {
+        if (GetFileAttributesA(".\\DamageIndicator.ini") != INVALID_FILE_ATTRIBUTES) {
+            strncpy_s(iniPath, ".\\DamageIndicator.ini", MAX_PATH);
+        } else {
+            HANDLE hFile = CreateFileA(iniPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hFile != INVALID_HANDLE_VALUE) {
+                const char* defaultIni =
+                    "; ==============================================================================\r\n"
+                    "; GTA Vice City - Directional Damage Indicator Configuration\r\n"
+                    "; ==============================================================================\r\n\r\n"
+                    "[General]\r\n"
+                    "; Enable or disable the damage indicator (1 = Enabled, 0 = Disabled)\r\n"
+                    "Enabled = 1\r\n\r\n"
+                    "; Optional hotkey to reload settings without restarting the game\r\n"
+                    "; (0 = Disabled, 121 = F10, 122 = F11, 123 = F12)\r\n"
+                    "ReloadKey = 0\r\n\r\n"
+                    "[Color]\r\n"
+                    "; Indicator color in RGB format (0 - 255)\r\n"
+                    "Red = 215\r\n"
+                    "Green = 18\r\n"
+                    "Blue = 18\r\n\r\n"
+                    "[Appearance]\r\n"
+                    "; Maximum edge opacity at peak damage (0 - 255, default 210)\r\n"
+                    "MaxAlpha = 210\r\n\r\n"
+                    "; Duration of the indicator fade in milliseconds (default 750)\r\n"
+                    "Duration = 750\r\n\r\n"
+                    "; Side edge thickness (% of screen width, 1 - 50, default 16)\r\n"
+                    "WidthPercent = 16\r\n\r\n"
+                    "; Top/Bottom edge thickness (% of screen height, 1 - 50, default 18)\r\n"
+                    "HeightPercent = 18\r\n\r\n"
+                    "; Fade-out animation curve (1 = Smooth quadratic, 0 = Linear)\r\n"
+                    "SmoothFade = 1\r\n";
+                DWORD written = 0;
+                WriteFile(hFile, defaultIni, (DWORD)strlen(defaultIni), &written, NULL);
+                CloseHandle(hFile);
+            }
+        }
+    }
+
+    g_Config.enabled       = GetPrivateProfileIntA("General", "Enabled", 1, iniPath) != 0;
+    g_Config.reloadKey     = GetPrivateProfileIntA("General", "ReloadKey", 0, iniPath);
+
+    int r = GetPrivateProfileIntA("Color", "Red", 215, iniPath);
+    int g = GetPrivateProfileIntA("Color", "Green", 18, iniPath);
+    int b = GetPrivateProfileIntA("Color", "Blue", 18, iniPath);
+    g_Config.red   = (uint8_t)(r < 0 ? 0 : (r > 255 ? 255 : r));
+    g_Config.green = (uint8_t)(g < 0 ? 0 : (g > 255 ? 255 : g));
+    g_Config.blue  = (uint8_t)(b < 0 ? 0 : (b > 255 ? 255 : b));
+
+    int maxA = GetPrivateProfileIntA("Appearance", "MaxAlpha", 210, iniPath);
+    g_Config.maxAlpha = (float)(maxA < 1 ? 1 : (maxA > 255 ? 255 : maxA));
+
+    int dur = GetPrivateProfileIntA("Appearance", "Duration", 750, iniPath);
+    g_Config.duration = (DWORD)(dur < 50 ? 50 : (dur > 10000 ? 10000 : dur));
+
+    int wp = GetPrivateProfileIntA("Appearance", "WidthPercent", 16, iniPath);
+    g_Config.widthPercent = (float)(wp < 1 ? 1 : (wp > 50 ? 50 : wp));
+
+    int hp = GetPrivateProfileIntA("Appearance", "HeightPercent", 18, iniPath);
+    g_Config.heightPercent = (float)(hp < 1 ? 1 : (hp > 50 ? 50 : hp));
+
+    g_Config.smoothFade = GetPrivateProfileIntA("Appearance", "SmoothFade", 1, iniPath) != 0;
+}
+
 static inline uint32_t MakeARGB(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
     return ((uint32_t)a << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
 }
@@ -131,7 +237,7 @@ static void __stdcall OnInflictDamage(void* pVictim, void* pInflictor, float dam
 
         DamageHit& hit = g_Hits[g_NextHitIdx];
         hit.startTime = now;
-        hit.duration = 750;
+        hit.duration = g_Config.duration;
         hit.sourceX = ix;
         hit.sourceY = iy;
         hit.hasWorldPos = hasPos;
@@ -183,7 +289,7 @@ static void DrawEdgeGlow(float screenW, float screenH, float edgeW, float edgeH,
                          float aLeft, float aRight, float aTop, float aBottom,
                          float nearZ, float recipNearClip) {
     RwIm2DVertex quad[4];
-    const uint8_t R = 215, G = 18, B = 18;
+    const uint8_t R = g_Config.red, G = g_Config.green, B = g_Config.blue;
 
     // Top Edge: spans full screen width, fades downwards
     if (aTop > 1.0f) {
@@ -232,6 +338,12 @@ static void DrawEdgeGlow(float screenW, float screenH, float edgeW, float edgeH,
 
 static void DrawDamageIndicator() {
     __try {
+        if (g_Config.reloadKey != 0 && (GetAsyncKeyState(g_Config.reloadKey) & 1)) {
+            LoadConfig(NULL);
+        }
+
+        if (!g_Config.enabled) return;
+
         uintptr_t pPlayer = *(uintptr_t*)ADDR_PLAYERS_ARRAY;
         if (!pPlayer || pPlayer < 0x100000) return;
 
@@ -257,8 +369,8 @@ static void DrawDamageIndicator() {
 
         float screenW = (float)width;
         float screenH = (float)height;
-        float edgeW   = screenW * 0.16f;
-        float edgeH   = screenH * 0.18f;
+        float edgeW   = screenW * (g_Config.widthPercent / 100.0f);
+        float edgeH   = screenH * (g_Config.heightPercent / 100.0f);
 
         float nearZ = *(float*)ADDR_NEAR_SCREEN_Z;
         float recipNearClip = *(float*)ADDR_RECIP_NEAR_CLIP;
@@ -301,8 +413,8 @@ static void DrawDamageIndicator() {
             }
 
             float t = 1.0f - ((float)elapsed / (float)g_Hits[i].duration);
-            float fade = t * t; // Smooth quadratic decay
-            float alpha = fade * 195.0f * g_Hits[i].intensity;
+            float fade = g_Config.smoothFade ? (t * t) : t;
+            float alpha = fade * g_Config.maxAlpha * g_Hits[i].intensity;
 
             if (g_Hits[i].hasWorldPos) {
                 float dx = g_Hits[i].sourceX - px;
@@ -332,10 +444,10 @@ static void DrawDamageIndicator() {
             }
         }
 
-        edgeLeft   = (std::min)(210.0f, edgeLeft);
-        edgeRight  = (std::min)(210.0f, edgeRight);
-        edgeTop    = (std::min)(210.0f, edgeTop);
-        edgeBottom = (std::min)(210.0f, edgeBottom);
+        edgeLeft   = (std::min)(g_Config.maxAlpha, edgeLeft);
+        edgeRight  = (std::min)(g_Config.maxAlpha, edgeRight);
+        edgeTop    = (std::min)(g_Config.maxAlpha, edgeTop);
+        edgeBottom = (std::min)(g_Config.maxAlpha, edgeBottom);
 
         if (edgeLeft <= 1.0f && edgeRight <= 1.0f && edgeTop <= 1.0f && edgeBottom <= 1.0f) {
             return;
@@ -400,6 +512,7 @@ static void InstallHooks() {
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hinstDLL);
+        LoadConfig(hinstDLL);
         InstallHooks();
     }
     return TRUE;

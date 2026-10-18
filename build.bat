@@ -20,14 +20,15 @@ if not exist bin mkdir bin
 cl /nologo /O2 /MD /LD /EHsc src\DamageIndicator.cpp /Febin\DamageIndicator.asi /link /INCREMENTAL:NO user32.lib kernel32.lib
 
 if %errorlevel% equ 0 (
+    copy /Y DamageIndicator.ini bin\DamageIndicator.ini >nul
     echo.
     echo [SUCCESS] Built successfully: bin\DamageIndicator.asi
     if exist "D:\GTA Vice City\scripts" (
         copy /Y bin\DamageIndicator.asi "D:\GTA Vice City\scripts\DamageIndicator.asi" >nul
-        echo [COPIED] Automatically deployed to D:\GTA Vice City\scripts\DamageIndicator.asi
+        copy /Y DamageIndicator.ini "D:\GTA Vice City\scripts\DamageIndicator.ini" >nul
+        echo [COPIED] Automatically deployed to D:\GTA Vice City\scripts\
     )
 ) else (
     echo.
     echo [ERROR] Build failed.
 )
-
