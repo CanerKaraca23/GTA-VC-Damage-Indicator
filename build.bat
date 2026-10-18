@@ -1,34 +1,33 @@
 @echo off
 setlocal
-echo ========================================================
-echo Building DamageIndicator for GTA Vice City (x86)
-echo ========================================================
-
-where cl >nul 2>nul
-if %errorlevel% neq 0 (
-    if exist "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars32.bat" (
-        call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars32.bat"
-    ) else if exist "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat" (
-        call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat"
-    ) else if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars32.bat" (
-        call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars32.bat"
-    )
+echo Setting up MSVC environment...
+call "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars32.bat"
+if errorlevel 1 (
+    echo Error: Failed to setup MSVC build environment.
+    exit /b 1
 )
 
 if not exist bin mkdir bin
 
-cl /nologo /O2 /MD /LD /EHsc src\DamageIndicator.cpp /Febin\DamageIndicator.asi /link /INCREMENTAL:NO user32.lib kernel32.lib
+echo Compiling version resource...
+rc.exe /nologo /fo bin\resource.res res\resource.rc
+if errorlevel 1 (
+    echo Resource compilation failed!
+    exit /b 1
+)
 
-if %errorlevel% equ 0 (
-    copy /Y DamageIndicator.ini bin\DamageIndicator.ini >nul
-    echo.
-    echo [SUCCESS] Built successfully: bin\DamageIndicator.asi
-    if exist "D:\GTA Vice City\scripts" (
-        copy /Y bin\DamageIndicator.asi "D:\GTA Vice City\scripts\DamageIndicator.asi" >nul
-        copy /Y DamageIndicator.ini "D:\GTA Vice City\scripts\DamageIndicator.ini" >nul
-        echo [COPIED] Automatically deployed to D:\GTA Vice City\scripts\
-    )
-) else (
-    echo.
-    echo [ERROR] Build failed.
+echo Compiling DamageIndicator for GTA San Andreas...
+cl /nologo /O2 /MD /LD /EHsc /Febin\DamageIndicator.asi src\DamageIndicatorSA.cpp bin\resource.res /link /INCREMENTAL:NO user32.lib kernel32.lib
+if errorlevel 1 (
+    echo Compilation failed!
+    exit /b 1
+)
+
+copy /Y DamageIndicator.ini bin\DamageIndicator.ini >nul
+echo Built bin\DamageIndicator.asi successfully!
+
+if exist "D:\GTA San Andreas" (
+    copy /Y bin\DamageIndicator.asi "D:\GTA San Andreas\DamageIndicator.asi" >nul
+    copy /Y DamageIndicator.ini "D:\GTA San Andreas\DamageIndicator.ini" >nul
+    echo Automatically deployed to D:\GTA San Andreas\
 )

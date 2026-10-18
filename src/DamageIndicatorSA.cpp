@@ -1,24 +1,15 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <cstdint>
-#include <cmath>
+#include <stdint.h>
+#include <math.h>
 #include <algorithm>
 
-// GTA Vice City v1.0 Addresses
-#define ADDR_PLAYERS_ARRAY       0x0094AD28  // CWorld::Players[0].m_pPed
-#define ADDR_THE_CAMERA          0x007E4688  // CCamera TheCamera
-#define ADDR_RS_GLOBAL_WIDTH     0x009B48DC  // RsGlobal.maximumWidth
-#define ADDR_RS_GLOBAL_HEIGHT    0x009B48E0  // RsGlobal.maximumHeight
-#define ADDR_NEAR_SCREEN_Z       0x0097F05C  // CSprite2d::NearScreenZ
-#define ADDR_RECIP_NEAR_CLIP     0x0094DB54  // CSprite2d::RecipNearClip
-#define ADDR_HUD_DRAW_CALL       0x004A64D0  // call CHud::Draw inside Render2DStuff
-#define ADDR_INFLICT_DAMAGE      0x00525B20  // CPed::InflictDamage()
-#define ADDR_INFLICT_JUMP_BACK   0x00525B26  // CPed::InflictDamage() + 6 bytes
+// =======================================================================
+// GTA San Andreas (v1.0 US) Minimal Directional Damage Indicator
+// Standalone ASI plugin - Zero dependencies.
+// =======================================================================
 
-// RenderWare Addresses & Constants
-#define ADDR_RW_RENDER_STATE_SET 0x00649BA0
-#define ADDR_RW_IM2D_RENDER_PRIM 0x00649C10
-
+// --- RenderWare State Enums ---
 #define rwRENDERSTATETEXTURERASTER      1
 #define rwRENDERSTATEZTESTENABLE        6
 #define rwRENDERSTATESHADEMODE          7
@@ -45,11 +36,33 @@ struct RwIm2DVertex {
 };
 #pragma pack(pop)
 
-typedef int(__cdecl* tRwRenderStateSet)(int state, void* value);
-typedef int(__cdecl* tRwIm2DRenderPrimitive)(int primType, RwIm2DVertex* vertices, int numVertices);
+// --- Engine & RenderWare Calls ---
+static inline int RwRenderStateSet(int state, void* value)
+{
+    uintptr_t rwEngine = *(uintptr_t*)0x00C97B24; // RwEngineInstance
+    if (!rwEngine) return 0;
+    typedef int (__cdecl *tRwRenderStateSet)(int state, void *value);
+    tRwRenderStateSet fn = *(tRwRenderStateSet*)(rwEngine + 0x20);
+    if (!fn) return 0;
+    return fn(state, value);
+}
 
-static tRwRenderStateSet RwRenderStateSet = (tRwRenderStateSet)ADDR_RW_RENDER_STATE_SET;
-static tRwIm2DRenderPrimitive RwIm2DRenderPrimitive = (tRwIm2DRenderPrimitive)ADDR_RW_IM2D_RENDER_PRIM;
+static inline int RwIm2DRenderPrimitive(int primType, RwIm2DVertex *vertices, int numVertices)
+{
+    typedef int (__cdecl *tRwIm2DRenderPrimitive)(int primType, RwIm2DVertex *vertices, int numVertices);
+    tRwIm2DRenderPrimitive fn = (tRwIm2DRenderPrimitive)0x00734E90;
+    return fn(primType, vertices, numVertices);
+}
+
+typedef void      (*HudDrawFn)();
+typedef uintptr_t (__cdecl *FindPlayerPedFn)(int playerId);
+typedef uintptr_t (__cdecl *FindPlayerVehicleFn)(int playerId, bool bIncludeRemote);
+
+static const FindPlayerPedFn     FindPlayerPed     = (FindPlayerPedFn)0x0056E210;
+static const FindPlayerVehicleFn FindPlayerVehicle = (FindPlayerVehicleFn)0x0056E0D0;
+
+static HudDrawFn g_OrigHudDraw = nullptr;
+static uintptr_t g_RetComputeDamage = 0x004B5AC6;
 
 // --- Mod Configuration ---
 struct ModConfig {
@@ -69,7 +82,7 @@ static ModConfig g_Config = {
     true,        // enabled
     215, 18, 18, // red, green, blue
     210.0f,      // maxAlpha
-    750,         // duration (ms)
+    800,         // duration (ms)
     16.0f,       // widthPercent (%)
     18.0f,       // heightPercent (%)
     true,        // smoothFade
@@ -101,7 +114,7 @@ static void LoadConfig(HMODULE hModule) {
             if (hFile != INVALID_HANDLE_VALUE) {
                 const char* defaultIni =
                     "; ==============================================================================\r\n"
-                    "; GTA Vice City - Directional Damage Indicator Configuration\r\n"
+                    "; GTA San Andreas - Directional Damage Indicator Configuration\r\n"
                     "; ==============================================================================\r\n\r\n"
                     "[General]\r\n"
                     "; Enable or disable the damage indicator (1 = Enabled, 0 = Disabled)\r\n"
@@ -117,8 +130,8 @@ static void LoadConfig(HMODULE hModule) {
                     "[Appearance]\r\n"
                     "; Maximum edge opacity at peak damage (0 - 255, default 210)\r\n"
                     "MaxAlpha = 210\r\n\r\n"
-                    "; Duration of the indicator fade in milliseconds (default 750)\r\n"
-                    "Duration = 750\r\n\r\n"
+                    "; Duration of the indicator fade in milliseconds (default 800)\r\n"
+                    "Duration = 800\r\n\r\n"
                     "; Side edge thickness (% of screen width, 1 - 50, default 16)\r\n"
                     "WidthPercent = 16\r\n\r\n"
                     "; Top/Bottom edge thickness (% of screen height, 1 - 50, default 18)\r\n"
@@ -145,7 +158,7 @@ static void LoadConfig(HMODULE hModule) {
     int maxA = GetPrivateProfileIntA("Appearance", "MaxAlpha", 210, iniPath);
     g_Config.maxAlpha = (float)(maxA < 1 ? 1 : (maxA > 255 ? 255 : maxA));
 
-    int dur = GetPrivateProfileIntA("Appearance", "Duration", 750, iniPath);
+    int dur = GetPrivateProfileIntA("Appearance", "Duration", 800, iniPath);
     g_Config.duration = (DWORD)(dur < 50 ? 50 : (dur > 10000 ? 10000 : dur));
 
     int wp = GetPrivateProfileIntA("Appearance", "WidthPercent", 16, iniPath);
@@ -171,120 +184,125 @@ static inline void SetVertex(RwIm2DVertex& v, float x, float y, uint32_t argb, f
     v.v = 0.0f;
 }
 
-// Damage Event
+// --- Damage Hit Tracking ---
 struct DamageHit {
     DWORD startTime;
     DWORD duration;
     float sourceX;
     float sourceY;
-    bool  hasWorldPos;
-    float intensity;
     bool  active;
 };
 
 static const int MAX_HITS = 16;
 static DamageHit g_Hits[MAX_HITS];
-static int g_NextHitIdx = 0;
 
-// Correct CEntity world position:
-// CEntity has virtual functions, so vtable is at 0x00.
-// CPlaceable (CMatrix) starts at 0x04.
-// Matrix pos is at +0x30 in CMatrix, so in CEntity it is at 0x04 + 0x30 = 0x34!
-static inline void GetEntityPos(uintptr_t pEntity, float& x, float& y) {
-    if (!pEntity || pEntity < 0x100000) {
-        x = y = 0.0f;
-        return;
+static inline bool IsValidPtr(uintptr_t p)
+{
+    return (p >= 0x00010000 && p <= 0x7FFFFFFF);
+}
+
+static bool GetEntityPos(uintptr_t pEntity, float& outX, float& outY)
+{
+    if (!IsValidPtr(pEntity)) return false;
+    uintptr_t pMatrix = *(uintptr_t*)(pEntity + 0x14); // CPlaceable::m_matrix
+    if (IsValidPtr(pMatrix)) {
+        outX = *(float*)(pMatrix + 0x30); // CMatrix::pos.x
+        outY = *(float*)(pMatrix + 0x34); // CMatrix::pos.y
+    } else {
+        outX = *(float*)(pEntity + 0x04); // CSimpleTransform::m_vPosn.x
+        outY = *(float*)(pEntity + 0x08); // CSimpleTransform::m_vPosn.y
     }
-    __try {
-        uintptr_t pVeh = *(uintptr_t*)(pEntity + 0x3A8);
-        bool inVeh = *(bool*)(pEntity + 0x3AC);
-        if (inVeh && pVeh >= 0x100000) {
-            x = *(float*)(pVeh + 0x34);
-            y = *(float*)(pVeh + 0x38);
+    return true;
+}
+
+static void RecordHit(float atkX, float atkY)
+{
+    DWORD now = GetTickCount();
+    for (int i = 0; i < MAX_HITS; ++i) {
+        if (!g_Hits[i].active || (now - g_Hits[i].startTime >= g_Hits[i].duration)) {
+            g_Hits[i].startTime = now;
+            g_Hits[i].duration  = g_Config.duration;
+            g_Hits[i].sourceX   = atkX;
+            g_Hits[i].sourceY   = atkY;
+            g_Hits[i].active    = true;
             return;
         }
-        x = *(float*)(pEntity + 0x34);
-        y = *(float*)(pEntity + 0x38);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        x = y = 0.0f;
+    // Shift oldest if full
+    for (int i = 0; i < MAX_HITS - 1; ++i) {
+        g_Hits[i] = g_Hits[i + 1];
     }
+    g_Hits[MAX_HITS - 1].startTime = now;
+    g_Hits[MAX_HITS - 1].duration  = g_Config.duration;
+    g_Hits[MAX_HITS - 1].sourceX   = atkX;
+    g_Hits[MAX_HITS - 1].sourceY   = atkY;
+    g_Hits[MAX_HITS - 1].active    = true;
 }
 
-// Called from naked hook when CPed::InflictDamage is invoked on player
-static void __stdcall OnInflictDamage(void* pVictim, void* pInflictor, float damage) {
-    __try {
-        if (!pVictim || damage <= 0.05f) return;
+// --- Damage Hook Handler ---
+void __stdcall OnPedDamage(uintptr_t pVictim, uintptr_t pCalculator)
+{
+    if (!IsValidPtr(pVictim) || !IsValidPtr(pCalculator)) return;
 
-        DWORD now = GetTickCount();
+    uintptr_t pPlayer = FindPlayerPed(-1);
+    if (!IsValidPtr(pPlayer) || pVictim != pPlayer) return;
 
-        float px = 0.0f, py = 0.0f;
-        GetEntityPos((uintptr_t)pVictim, px, py);
+    // Attacker entity is at offset 0x00 of CPedDamageResponseCalculator
+    uintptr_t pAttacker = *(uintptr_t*)(pCalculator + 0x00);
+    if (!IsValidPtr(pAttacker)) return;
 
-        bool hasPos = false;
-        float ix = 0.0f, iy = 0.0f;
-
-        if (pInflictor && (uintptr_t)pInflictor >= 0x100000 && pInflictor != pVictim) {
-            GetEntityPos((uintptr_t)pInflictor, ix, iy);
-            float dx = ix - px;
-            float dy = iy - py;
-            if (dx * dx + dy * dy > 0.04f) {
-                hasPos = true;
-            }
+    // If attacker is a vehicle, use driver position if available
+    uint8_t entityType = *(uint8_t*)(pAttacker + 0x36) & 7;
+    if (entityType == 2) {
+        uintptr_t pDriver = *(uintptr_t*)(pAttacker + 0x460); // CVehicle::m_pDriver
+        if (IsValidPtr(pDriver)) {
+            pAttacker = pDriver;
         }
-
-        float intensity = (std::min)(1.0f, (std::max)(0.35f, damage / 20.0f));
-
-        DamageHit& hit = g_Hits[g_NextHitIdx];
-        hit.startTime = now;
-        hit.duration = g_Config.duration;
-        hit.sourceX = ix;
-        hit.sourceY = iy;
-        hit.hasWorldPos = hasPos;
-        hit.intensity = intensity;
-        hit.active = true;
-
-        g_NextHitIdx = (g_NextHitIdx + 1) % MAX_HITS;
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
+
+    float atkX = 0.0f, atkY = 0.0f;
+    if (!GetEntityPos(pAttacker, atkX, atkY)) return;
+
+    float plrX = 0.0f, plrY = 0.0f;
+    uintptr_t pVeh = FindPlayerVehicle(-1, false);
+    if (IsValidPtr(pVeh)) {
+        GetEntityPos(pVeh, plrX, plrY);
+    } else {
+        GetEntityPos(pPlayer, plrX, plrY);
     }
+
+    float dx = atkX - plrX;
+    float dy = atkY - plrY;
+    if ((dx * dx + dy * dy) < 0.001f) return;
+
+    RecordHit(atkX, atkY);
 }
 
-static const uintptr_t JUMP_BACK_ADDR = ADDR_INFLICT_JUMP_BACK;
-
-__declspec(naked) void Hook_InflictDamage() {
+// Naked detour for CPedDamageResponseCalculator::ComputeDamageResponse (0x004B5AC0)
+__declspec(naked) void Hook_ComputeDamageResponse()
+{
     __asm {
         pushad
         pushfd
 
-        // Check if victim (ECX) is Tommy
-        mov eax, ds:[ADDR_PLAYERS_ARRAY]
-        cmp ecx, eax
-        jne skip_hook
+        // Stack layout after pushad (32 bytes) + pushfd (4 bytes) = 36 bytes:
+        // [esp + 36] = caller return address
+        // [esp + 40] = victim CPed* (first argument pushed by caller)
+        // ecx = this (CPedDamageResponseCalculator*)
+        push ecx
+        push dword ptr [esp + 44] // victim CPed*
+        call OnPedDamage
 
-        // Stack layout after pushad (32 bytes) + pushfd (4 bytes):
-        // [esp + 36] = return address to caller
-        // [esp + 40] = pInflictor
-        // [esp + 44] = weaponType
-        // [esp + 48] = damage
-        push dword ptr [esp + 48] // damage
-        push dword ptr [esp + 44] // pInflictor (40 + 4 pushed)
-        push ecx                  // pVictim
-        call OnInflictDamage
-
-    skip_hook:
         popfd
         popad
 
-        // Execute original 6 bytes: fld dword ptr ds:[0x00694170]
-        fld dword ptr ds:[0x00694170]
-
-        // Jump back to 0x00525B26
-        jmp dword ptr ds:[JUMP_BACK_ADDR]
+        // Replaced instruction at 0x004B5AC0 (mov eax, dword ptr fs:[0])
+        mov eax, dword ptr fs:[0]
+        jmp dword ptr [g_RetComputeDamage]
     }
 }
 
-// Render full rectangular screen-edge gradients (NO diagonal trapezoid corner cuts)
+// Render full rectangular screen-edge gradients (smooth corners, identical to Vice City)
 static void DrawEdgeGlow(float screenW, float screenH, float edgeW, float edgeH,
                          float aLeft, float aRight, float aTop, float aBottom,
                          float nearZ, float recipNearClip) {
@@ -295,10 +313,10 @@ static void DrawEdgeGlow(float screenW, float screenH, float edgeW, float edgeH,
     if (aTop > 1.0f) {
         uint32_t colOpaque = MakeARGB((uint8_t)aTop, R, G, B);
         uint32_t colTrans  = MakeARGB(0, R, G, B);
-        SetVertex(quad[0], 0.0f, 0.0f, colOpaque, nearZ, recipNearClip);
-        SetVertex(quad[1], screenW, 0.0f, colOpaque, nearZ, recipNearClip);
-        SetVertex(quad[2], screenW, edgeH, colTrans, nearZ, recipNearClip);
-        SetVertex(quad[3], 0.0f, edgeH, colTrans, nearZ, recipNearClip);
+        SetVertex(quad[0], 0.0f,    0.0f,  colOpaque, nearZ, recipNearClip);
+        SetVertex(quad[1], screenW, 0.0f,  colOpaque, nearZ, recipNearClip);
+        SetVertex(quad[2], screenW, edgeH, colTrans,  nearZ, recipNearClip);
+        SetVertex(quad[3], 0.0f,    edgeH, colTrans,  nearZ, recipNearClip);
         RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, quad, 4);
     }
 
@@ -306,10 +324,10 @@ static void DrawEdgeGlow(float screenW, float screenH, float edgeW, float edgeH,
     if (aBottom > 1.0f) {
         uint32_t colOpaque = MakeARGB((uint8_t)aBottom, R, G, B);
         uint32_t colTrans  = MakeARGB(0, R, G, B);
-        SetVertex(quad[0], 0.0f, screenH - edgeH, colTrans, nearZ, recipNearClip);
-        SetVertex(quad[1], screenW, screenH - edgeH, colTrans, nearZ, recipNearClip);
-        SetVertex(quad[2], screenW, screenH, colOpaque, nearZ, recipNearClip);
-        SetVertex(quad[3], 0.0f, screenH, colOpaque, nearZ, recipNearClip);
+        SetVertex(quad[0], 0.0f,    screenH - edgeH, colTrans,  nearZ, recipNearClip);
+        SetVertex(quad[1], screenW, screenH - edgeH, colTrans,  nearZ, recipNearClip);
+        SetVertex(quad[2], screenW, screenH,         colOpaque, nearZ, recipNearClip);
+        SetVertex(quad[3], 0.0f,    screenH,         colOpaque, nearZ, recipNearClip);
         RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, quad, 4);
     }
 
@@ -317,10 +335,10 @@ static void DrawEdgeGlow(float screenW, float screenH, float edgeW, float edgeH,
     if (aLeft > 1.0f) {
         uint32_t colOpaque = MakeARGB((uint8_t)aLeft, R, G, B);
         uint32_t colTrans  = MakeARGB(0, R, G, B);
-        SetVertex(quad[0], 0.0f, 0.0f, colOpaque, nearZ, recipNearClip);
-        SetVertex(quad[1], edgeW, 0.0f, colTrans, nearZ, recipNearClip);
-        SetVertex(quad[2], edgeW, screenH, colTrans, nearZ, recipNearClip);
-        SetVertex(quad[3], 0.0f, screenH, colOpaque, nearZ, recipNearClip);
+        SetVertex(quad[0], 0.0f,  0.0f,    colOpaque, nearZ, recipNearClip);
+        SetVertex(quad[1], edgeW, 0.0f,    colTrans,  nearZ, recipNearClip);
+        SetVertex(quad[2], edgeW, screenH, colTrans,  nearZ, recipNearClip);
+        SetVertex(quad[3], 0.0f,  screenH, colOpaque, nearZ, recipNearClip);
         RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, quad, 4);
     }
 
@@ -328,15 +346,17 @@ static void DrawEdgeGlow(float screenW, float screenH, float edgeW, float edgeH,
     if (aRight > 1.0f) {
         uint32_t colOpaque = MakeARGB((uint8_t)aRight, R, G, B);
         uint32_t colTrans  = MakeARGB(0, R, G, B);
-        SetVertex(quad[0], screenW - edgeW, 0.0f, colTrans, nearZ, recipNearClip);
-        SetVertex(quad[1], screenW, 0.0f, colOpaque, nearZ, recipNearClip);
-        SetVertex(quad[2], screenW, screenH, colOpaque, nearZ, recipNearClip);
-        SetVertex(quad[3], screenW - edgeW, screenH, colTrans, nearZ, recipNearClip);
+        SetVertex(quad[0], screenW - edgeW, 0.0f,    colTrans,  nearZ, recipNearClip);
+        SetVertex(quad[1], screenW,         0.0f,    colOpaque, nearZ, recipNearClip);
+        SetVertex(quad[2], screenW,         screenH, colOpaque, nearZ, recipNearClip);
+        SetVertex(quad[3], screenW - edgeW, screenH, colTrans,  nearZ, recipNearClip);
         RwIm2DRenderPrimitive(rwPRIMTYPETRIFAN, quad, 4);
     }
 }
 
-static void DrawDamageIndicator() {
+// --- Render Indicators ---
+static void DrawDamageIndicators()
+{
     __try {
         if (g_Config.reloadKey != 0 && (GetAsyncKeyState(g_Config.reloadKey) & 1)) {
             LoadConfig(NULL);
@@ -344,16 +364,8 @@ static void DrawDamageIndicator() {
 
         if (!g_Config.enabled) return;
 
-        uintptr_t pPlayer = *(uintptr_t*)ADDR_PLAYERS_ARRAY;
-        if (!pPlayer || pPlayer < 0x100000) return;
-
-        int width  = *(int*)ADDR_RS_GLOBAL_WIDTH;
-        int height = *(int*)ADDR_RS_GLOBAL_HEIGHT;
-        if (width <= 0 || height <= 0) return;
-
-        DWORD now = GetTickCount();
-
         // Check if there are active hits
+        DWORD now = GetTickCount();
         bool anyActive = false;
         for (int i = 0; i < MAX_HITS; ++i) {
             if (g_Hits[i].active) {
@@ -367,26 +379,44 @@ static void DrawDamageIndicator() {
         }
         if (!anyActive) return;
 
+        // Player coordinates
+        uintptr_t pPlayer = FindPlayerPed(-1);
+        if (!IsValidPtr(pPlayer)) return;
+
+        float plrX = 0.0f, plrY = 0.0f;
+        uintptr_t pVeh = FindPlayerVehicle(-1, false);
+        if (IsValidPtr(pVeh)) {
+            GetEntityPos(pVeh, plrX, plrY);
+        } else {
+            GetEntityPos(pPlayer, plrX, plrY);
+        }
+
+        int width  = *(int*)0x00C17044; // RsGlobal.maximumWidth
+        int height = *(int*)0x00C17048; // RsGlobal.maximumHeight
+        if (width <= 0 || height <= 0) return;
+
         float screenW = (float)width;
         float screenH = (float)height;
         float edgeW   = screenW * (g_Config.widthPercent / 100.0f);
         float edgeH   = screenH * (g_Config.heightPercent / 100.0f);
 
-        float nearZ = *(float*)ADDR_NEAR_SCREEN_Z;
-        float recipNearClip = *(float*)ADDR_RECIP_NEAR_CLIP;
+        float nearZ = *(float*)0x00C80460;        // CSprite2d::NearScreenZ
+        float recipNearClip = *(float*)0x00C80464; // CSprite2d::RecipNearClip
         if (recipNearClip <= 0.00001f) recipNearClip = 1.0f;
 
-        // Player position
-        float px = 0.0f, py = 0.0f;
-        GetEntityPos(pPlayer, px, py);
-
-        // Active Camera 2D Forward Vector (Classic Axis & Vanilla compatible)
-        uint8_t activeCam = *(uint8_t*)(ADDR_THE_CAMERA + 0x76);
-        if (activeCam > 2) activeCam = 0;
-        uintptr_t pCam = (ADDR_THE_CAMERA + 0x188) + (activeCam * 0x1CC);
-
-        float camLookX = *(float*)(pCam + 0x168);
-        float camLookY = *(float*)(pCam + 0x168 + 4);
+        // Active Camera 2D Forward Vector
+        uint8_t activeCam = *(uint8_t*)(0x00B6F028 + 0x59);
+        float camLookX = 0.0f, camLookY = 0.0f;
+        if (activeCam <= 2) {
+            uintptr_t pCam = 0x00B6F028 + 0x174 + activeCam * 0x238;
+            camLookX = *(float*)(pCam + 0x190); // CCam::m_vecFront.x
+            camLookY = *(float*)(pCam + 0x194); // CCam::m_vecFront.y
+        }
+        if ((camLookX * camLookX + camLookY * camLookY) < 0.0001f) {
+            // Fallback: TheCamera.m_mCameraMatrix up vector at +0x974 + 0x10
+            camLookX = *(float*)(0x00B6F028 + 0x974 + 0x10);
+            camLookY = *(float*)(0x00B6F028 + 0x974 + 0x14);
+        }
 
         float camLen = sqrtf(camLookX * camLookX + camLookY * camLookY);
         if (camLen > 0.0001f) {
@@ -414,34 +444,25 @@ static void DrawDamageIndicator() {
 
             float t = 1.0f - ((float)elapsed / (float)g_Hits[i].duration);
             float fade = g_Config.smoothFade ? (t * t) : t;
-            float alpha = fade * g_Config.maxAlpha * g_Hits[i].intensity;
+            float alpha = fade * g_Config.maxAlpha;
 
-            if (g_Hits[i].hasWorldPos) {
-                float dx = g_Hits[i].sourceX - px;
-                float dy = g_Hits[i].sourceY - py;
+            float dx = g_Hits[i].sourceX - plrX;
+            float dy = g_Hits[i].sourceY - plrY;
 
-                // Project attacker onto Camera Forward and Right
-                float fwd   = dx * camLookX  + dy * camLookY;
-                float right = dx * camRightX + dy * camRightY;
+            // Project attacker onto Camera Forward and Right
+            float fwd   = dx * camLookX  + dy * camLookY;
+            float right = dx * camRightX + dy * camRightY;
 
-                float len = sqrtf(fwd * fwd + right * right);
-                if (len > 0.0001f) {
-                    fwd /= len;
-                    right /= len;
-                }
-
-                edgeTop    += (std::max)(0.0f, fwd)    * alpha;
-                edgeBottom += (std::max)(0.0f, -fwd)   * alpha;
-                edgeRight  += (std::max)(0.0f, right)  * alpha;
-                edgeLeft   += (std::max)(0.0f, -right) * alpha;
-            } else {
-                // Non-directional damage (explosions, fall, fire)
-                float nonDirAlpha = alpha * 0.7f;
-                edgeTop    += nonDirAlpha;
-                edgeBottom += nonDirAlpha;
-                edgeRight  += nonDirAlpha;
-                edgeLeft   += nonDirAlpha;
+            float len = sqrtf(fwd * fwd + right * right);
+            if (len > 0.0001f) {
+                fwd   /= len;
+                right /= len;
             }
+
+            edgeTop    += (std::max)(0.0f, fwd)    * alpha;
+            edgeBottom += (std::max)(0.0f, -fwd)   * alpha;
+            edgeRight  += (std::max)(0.0f, right)  * alpha;
+            edgeLeft   += (std::max)(0.0f, -right) * alpha;
         }
 
         edgeLeft   = (std::min)(g_Config.maxAlpha, edgeLeft);
@@ -477,39 +498,44 @@ static void DrawDamageIndicator() {
     }
 }
 
-static uintptr_t g_OrigHudDraw = 0;
-
-static void Hooked_HudDraw() {
+// Hooked HUD Draw callback called inside Render2DStuff (0x0053E4FF)
+static void HookedHudDraw()
+{
     if (g_OrigHudDraw) {
-        ((void(__cdecl*)())g_OrigHudDraw)(); // Call original hook target (Classic Axis crosshair / CHud::Draw)
+        g_OrigHudDraw();
     }
-    DrawDamageIndicator();
+    DrawDamageIndicators();
 }
 
-static void InstallHooks() {
-    DWORD oldProtect;
+// --- Initialization & Hook Installation ---
+static void InstallHooks()
+{
+    // Sanity check: GTA San Andreas v1.0 US (Hoodlum)
+    // 0x0053E4FF: call CHud::Draw (0xE8)
+    // 0x004B5AC0: CPedDamageResponseCalculator::ComputeDamageResponse (0x64 = mov eax, fs:[0])
+    if (*(uint8_t*)0x0053E4FF != 0xE8 || *(uint8_t*)0x004B5AC0 != 0x64) {
+        return;
+    }
 
-    // 1. Hook CHud::Draw call at 0x004A64D0 dynamically preserving whatever was hooked before us
-    uintptr_t hudCallAddr = ADDR_HUD_DRAW_CALL;
-    VirtualProtect((void*)hudCallAddr, 5, PAGE_EXECUTE_READWRITE, &oldProtect);
+    DWORD oldProt;
 
-    int32_t relOffset = *(int32_t*)(hudCallAddr + 1);
-    g_OrigHudDraw = hudCallAddr + 5 + relOffset;
+    // 1. Hook Damage Response (0x004B5AC0)
+    VirtualProtect((void*)0x004B5AC0, 6, PAGE_EXECUTE_READWRITE, &oldProt);
+    *(uint8_t*)0x004B5AC0 = 0xE9; // JMP Hook_ComputeDamageResponse
+    *(int32_t*)0x004B5AC1 = (int32_t)((uintptr_t)Hook_ComputeDamageResponse - (0x004B5AC0 + 5));
+    *(uint8_t*)0x004B5AC5 = 0x90; // NOP
+    VirtualProtect((void*)0x004B5AC0, 6, oldProt, &oldProt);
 
-    int32_t newRelOffset = (int32_t)((uintptr_t)Hooked_HudDraw - (hudCallAddr + 5));
-    *(int32_t*)(hudCallAddr + 1) = newRelOffset;
-    VirtualProtect((void*)hudCallAddr, 5, oldProtect, &oldProtect);
-
-    // 2. Hook CPed::InflictDamage at 0x00525B20 (overwrite 6 bytes with JMP + NOP)
-    uintptr_t damageAddr = ADDR_INFLICT_DAMAGE;
-    VirtualProtect((void*)damageAddr, 6, PAGE_EXECUTE_READWRITE, &oldProtect);
-    *(uint8_t*)damageAddr = 0xE9; // JMP rel32
-    *(int32_t*)(damageAddr + 1) = (int32_t)((uintptr_t)Hook_InflictDamage - (damageAddr + 5));
-    *(uint8_t*)(damageAddr + 5) = 0x90; // NOP
-    VirtualProtect((void*)damageAddr, 6, oldProtect, &oldProtect);
+    // 2. Hook HUD Draw call site inside Render2DStuff (0x0053E4FF)
+    VirtualProtect((void*)0x0053E4FF, 5, PAGE_EXECUTE_READWRITE, &oldProt);
+    int32_t origRel = *(int32_t*)0x0053E500;
+    g_OrigHudDraw = (HudDrawFn)(0x0053E504 + origRel);
+    *(int32_t*)0x0053E500 = (int32_t)((uintptr_t)HookedHudDraw - 0x0053E504);
+    VirtualProtect((void*)0x0053E4FF, 5, oldProt, &oldProt);
 }
 
-BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
+BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+{
     if (fdwReason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hinstDLL);
         LoadConfig(hinstDLL);
