@@ -24,6 +24,10 @@ A lightweight, clean, and minimal native C++ ASI plugin for **Grand Theft Auto: 
 The mod creates a `DamageIndicator.ini` file in the same directory as the `.asi` file upon first launch if not already present.
 
 ```ini
+; ==============================================================================
+; GTA Vice City - Damage Indicator Configuration by Caner Karaca
+; ==============================================================================
+
 [General]
 ; Enable or disable the damage indicator (1 = Enabled, 0 = Disabled)
 Enabled = 1
