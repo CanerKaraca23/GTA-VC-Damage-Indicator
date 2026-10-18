@@ -114,7 +114,7 @@ static void LoadConfig(HMODULE hModule) {
             if (hFile != INVALID_HANDLE_VALUE) {
                 const char* defaultIni =
                     "; ==============================================================================\r\n"
-                    "; GTA San Andreas - Directional Damage Indicator Configuration\r\n"
+                    "; GTA San Andreas - Damage Indicator Configuration by Caner Karaca\r\n"
                     "; ==============================================================================\r\n\r\n"
                     "[General]\r\n"
                     "; Enable or disable the damage indicator (1 = Enabled, 0 = Disabled)\r\n"
